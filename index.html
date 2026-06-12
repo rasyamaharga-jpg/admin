@@ -1,361 +1,120 @@
-<!DOCTYPE html>
-<html lang="id">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin KasurKita</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        .status-badge { padding: 4px 8px; border-radius: 20px; font-size: 12px; font-weight: 600; display: inline-block; }
-        .status-menunggu-pembayaran { background:#FEF3C7; color:#92400E; }
-        .status-pembayaran-dikonfirmasi { background:#DBEAFE; color:#1E40AF; }
-        .status-diproses { background:#EDE9FE; color:#5B21B6; }
-        .status-dikirim { background:#D1FAE5; color:#065F46; }
-        .status-selesai { background:#F0FDF4; color:#166534; }
-    </style>
-</head>
-<body class="bg-gray-100">
+// api/admin.js - Final version with proper CORS and Supabase URL cleanup
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
+const ADMIN_PASS   = process.env.ADMIN_PASS;
+const GAS_URL      = process.env.GAS_URL;
 
-<!-- Login Screen -->
-<div id="loginScreen" class="flex items-center justify-center min-h-screen">
-    <div class="bg-white p-8 rounded-2xl shadow-xl w-96">
-        <h1 class="text-2xl font-bold text-center text-green-700">KasurKita Admin</h1>
-        <input type="password" id="adminPass" placeholder="Password" class="w-full border rounded-lg p-3 mt-4">
-        <button onclick="login()" class="w-full bg-green-700 text-white p-3 rounded-lg mt-4">Login</button>
-        <div id="loginError" class="text-red-500 text-sm text-center mt-2 hidden"></div>
-    </div>
-</div>
+// Bersihkan URL dari trailing slash atau /rest/v1
+const cleanUrl = SUPABASE_URL.replace(/\/rest\/v1\/?$/, '').replace(/\/$/, '');
 
-<!-- Admin Panel (hidden after login) -->
-<div id="adminPanel" class="hidden max-w-7xl mx-auto p-4">
-    <div class="flex justify-between items-center mb-6">
-        <h1 class="text-2xl font-bold text-green-700">Admin KasurKita</h1>
-        <button onclick="logout()" class="text-red-500 hover:underline">Logout</button>
-    </div>
+export default async function handler(req, res) {
+  // Set CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Max-Age', '86400');
 
-    <!-- Stats Cards -->
-    <div id="statsContainer" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6"></div>
+  // Handle preflight OPTIONS
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
 
-    <!-- Tabs -->
-    <div class="flex gap-2 border-b mb-4">
-        <button id="tabOrdersBtn" class="px-4 py-2 font-semibold text-green-700 border-b-2 border-green-700" onclick="showTab('orders')">Pesanan</button>
-        <button id="tabStockBtn" class="px-4 py-2 font-semibold text-gray-500" onclick="showTab('stock')">Stok Produk</button>
-    </div>
+  if (req.method !== 'POST') {
+    return res.status(405).json({ status: 'error', message: 'Method not allowed' });
+  }
 
-    <!-- Orders Panel -->
-    <div id="ordersPanel">
-        <div class="bg-white rounded-xl shadow p-4 mb-4 flex flex-wrap gap-2">
-            <input type="text" id="searchOrder" placeholder="Cari ID / Nama / WA" class="border rounded-lg px-3 py-2 flex-1">
-            <select id="statusFilter" class="border rounded-lg px-3 py-2">
-                <option value="Semua">Semua Status</option>
-                <option value="Menunggu Pembayaran">Menunggu Pembayaran</option>
-                <option value="Pembayaran Dikonfirmasi">Pembayaran Dikonfirmasi</option>
-                <option value="Diproses">Diproses</option>
-                <option value="Dikirim">Dikirim</option>
-                <option value="Selesai">Selesai</option>
-            </select>
-            <button onclick="loadOrders()" class="bg-gray-200 px-4 py-2 rounded-lg">Refresh</button>
-        </div>
-        <div id="ordersTable" class="bg-white rounded-xl shadow overflow-x-auto">Loading...</div>
-    </div>
+  // Parse body (handle jika sudah parsed)
+  let body = req.body;
+  if (!body || typeof body !== 'object') {
+    try {
+      body = JSON.parse(req.body);
+    } catch (e) {
+      return res.status(400).json({ status: 'error', message: 'Body tidak valid JSON' });
+    }
+  }
 
-    <!-- Stock Panel (hidden initially) -->
-    <div id="stockPanel" class="hidden">
-        <div class="bg-white rounded-xl shadow p-4">
-            <div id="stockTable">Loading...</div>
-        </div>
-    </div>
-</div>
+  // Verifikasi password
+  if (!body.adminPass || body.adminPass !== ADMIN_PASS) {
+    await new Promise(r => setTimeout(r, 1000));
+    return res.status(403).json({ status: 'error', message: 'Akses ditolak' });
+  }
 
-<!-- Modal Update Order -->
-<div id="updateModal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-    <div class="bg-white rounded-2xl p-6 w-full max-w-md">
-        <h3 class="text-xl font-bold mb-4">Update Pesanan</h3>
-        <div class="mb-3">
-            <label class="block text-sm font-semibold">Status</label>
-            <select id="modalStatus" class="w-full border rounded-xl px-3 py-2">
-                <option value="Menunggu Pembayaran">Menunggu Pembayaran</option>
-                <option value="Pembayaran Dikonfirmasi">Pembayaran Dikonfirmasi</option>
-                <option value="Diproses">Diproses</option>
-                <option value="Dikirim">Dikirim</option>
-                <option value="Selesai">Selesai</option>
-            </select>
-        </div>
-        <div class="mb-3">
-            <label class="block text-sm font-semibold">No. Resi (jika Dikirim)</label>
-            <input id="modalResi" type="text" class="w-full border rounded-xl px-3 py-2" placeholder="Nomor resi">
-        </div>
-        <div class="mb-4">
-            <label class="block text-sm font-semibold">Kurir (jika Dikirim)</label>
-            <input id="modalKurir" type="text" class="w-full border rounded-xl px-3 py-2" placeholder="Nama kurir">
-        </div>
-        <div class="flex gap-3">
-            <button onclick="confirmUpdate()" class="flex-1 bg-green-700 text-white py-2 rounded-xl">Simpan</button>
-            <button onclick="closeModal()" class="flex-1 bg-gray-200 py-2 rounded-xl">Batal</button>
-        </div>
-    </div>
-</div>
+  const { action } = body;
 
-<script>
-    const API_BASE = "https://kasurkita-functions.vercel.app/api";
-    let token = null;
-    let allOrders = [];
-    let currentOrderId = null;
-
-    // Login function
-    async function login() {
-        const pass = document.getElementById('adminPass').value;
-        const errorDiv = document.getElementById('loginError');
-        errorDiv.classList.add('hidden');
-        if (!pass) {
-            errorDiv.innerText = 'Masukkan password';
-            errorDiv.classList.remove('hidden');
-            return;
-        }
-        try {
-            const response = await fetch(`${API_BASE}/admin`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'verifyLogin', adminPass: pass })
-            });
-            const data = await response.json();
-            if (data.status === 'success') {
-                token = pass;
-                document.getElementById('loginScreen').classList.add('hidden');
-                document.getElementById('adminPanel').classList.remove('hidden');
-                loadOrders();
-            } else {
-                errorDiv.innerText = data.message || 'Password salah';
-                errorDiv.classList.remove('hidden');
-            }
-        } catch (err) {
-            errorDiv.innerText = 'Gagal koneksi: ' + err.message;
-            errorDiv.classList.remove('hidden');
-        }
+  try {
+    if (action === 'verifyLogin') {
+      return res.status(200).json({ status: 'success' });
     }
 
-    function logout() {
-        token = null;
-        document.getElementById('adminPanel').classList.add('hidden');
-        document.getElementById('loginScreen').classList.remove('hidden');
-        document.getElementById('adminPass').value = '';
+    if (action === 'getAllPesanan') {
+      const r = await fetch(`${cleanUrl}/rest/v1/pesanan?select=*&order=tanggal.desc`, {
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+      });
+      const data = await r.json();
+      const pesanan = data.map(p => ({
+        idPesanan: p.id_pesanan, tanggal: p.tanggal, nama: p.nama_pembeli, noWA: p.no_whatsapp,
+        idVarian: p.id_varian, idMotif: p.id_motif, jumlah: p.jumlah_beli, totalHarga: p.total_harga,
+        alamat: p.alamat, kotaTujuan: p.kota_tujuan || '-', status: p.status || 'Menunggu Pembayaran',
+        noResi: p.no_resi || '', kurir: p.kurir || ''
+      }));
+      return res.status(200).json({ status: 'success', pesanan });
     }
 
-    // Load orders from API
-    async function loadOrders() {
-        const ordersDiv = document.getElementById('ordersTable');
-        ordersDiv.innerHTML = '<div class="p-4 text-center">Loading...</div>';
-        try {
-            const res = await fetch(`${API_BASE}/admin`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'getAllPesanan', adminPass: token })
-            });
-            const data = await res.json();
-            if (data.status !== 'success') throw new Error(data.message);
-            allOrders = data.pesanan;
-            renderStats();
-            filterAndRenderOrders();
-        } catch (err) {
-            ordersDiv.innerHTML = `<div class="p-4 text-red-500">Error: ${err.message}</div>`;
-        }
+    if (action === 'getProdukAdmin') {
+      const r = await fetch(`${cleanUrl}/rest/v1/produk?select=*&order=lebar.asc,tinggi_kasur.asc`, {
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+      });
+      const data = await r.json();
+      const produk = data.map(p => ({
+        id: p.id_varian, nama: p.nama_produk, lebar: p.lebar, tinggi: p.tinggi_kasur,
+        harga: p.harga, stok: p.stok, aktif: p.aktif
+      }));
+      return res.status(200).json({ status: 'success', produk });
     }
 
-    function renderStats() {
-        const total = allOrders.length;
-        const pending = allOrders.filter(o => o.status === 'Menunggu Pembayaran').length;
-        const processed = allOrders.filter(o => o.status === 'Diproses').length;
-        const completed = allOrders.filter(o => o.status === 'Selesai').length;
-        const omzet = allOrders.filter(o => o.status === 'Selesai').reduce((sum, o) => sum + o.totalHarga, 0);
-        const fmt = (n) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(n);
-        document.getElementById('statsContainer').innerHTML = `
-            <div class="bg-white p-3 rounded shadow text-center"><div class="text-xl">📦</div><div class="text-gray-500 text-sm">Total</div><div class="font-bold">${total}</div></div>
-            <div class="bg-white p-3 rounded shadow text-center"><div class="text-xl">⏳</div><div class="text-gray-500 text-sm">Menunggu</div><div class="font-bold">${pending}</div></div>
-            <div class="bg-white p-3 rounded shadow text-center"><div class="text-xl">🚚</div><div class="text-gray-500 text-sm">Diproses</div><div class="font-bold">${processed}</div></div>
-            <div class="bg-white p-3 rounded shadow text-center"><div class="text-xl">✅</div><div class="text-gray-500 text-sm">Selesai</div><div class="font-bold">${completed}</div></div>
-            <div class="col-span-2 md:col-span-4 bg-white p-3 rounded shadow text-center"><div class="text-xl">💰</div><div class="text-gray-500 text-sm">Omzet Selesai</div><div class="font-bold text-green-700">${fmt(omzet)}</div></div>
-        `;
+    if (action === 'updateStatus') {
+      const { idPesanan, statusBaru } = body;
+      const valid = ['Menunggu Pembayaran','Pembayaran Dikonfirmasi','Diproses','Dikirim','Selesai'];
+      if (!valid.includes(statusBaru)) return res.status(400).json({ status: 'error', message: 'Status tidak valid' });
+      await fetch(`${cleanUrl}/rest/v1/pesanan?id_pesanan=eq.${idPesanan}`, {
+        method: 'PATCH',
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: statusBaru })
+      });
+      if (GAS_URL) {
+        fetch(GAS_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ action: 'syncUpdateStatus', idPesanan, statusBaru }) })
+          .catch(e => console.error('Sync GAS gagal:', e.message));
+      }
+      return res.status(200).json({ status: 'success', idPesanan, statusBaru });
     }
 
-    function filterAndRenderOrders() {
-        let filtered = [...allOrders];
-        const search = document.getElementById('searchOrder').value.toLowerCase();
-        const status = document.getElementById('statusFilter').value;
-        if (status !== 'Semua') filtered = filtered.filter(o => o.status === status);
-        if (search) filtered = filtered.filter(o => o.idPesanan.toLowerCase().includes(search) || o.nama.toLowerCase().includes(search) || o.noWA.includes(search));
-        renderOrdersTable(filtered);
+    if (action === 'updateStokAdmin') {
+      const { idVarian, stokBaru } = body;
+      await fetch(`${cleanUrl}/rest/v1/produk?id_varian=eq.${idVarian}`, {
+        method: 'PATCH',
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stok: parseInt(stokBaru) })
+      });
+      return res.status(200).json({ status: 'success', idVarian, stokBaru });
     }
 
-    function renderOrdersTable(orders) {
-        const ordersDiv = document.getElementById('ordersTable');
-        if (!orders.length) {
-            ordersDiv.innerHTML = '<div class="text-center p-8 text-gray-400">Tidak ada pesanan</div>';
-            return;
-        }
-        let html = `<table class="min-w-full text-sm"><thead class="bg-gray-100"></tr>`;
-        html += `<th class="p-2 text-left">ID</th><th class="p-2 text-left">Tanggal</th><th class="p-2 text-left">Nama</th>
-                 <th class="p-2 text-left">WA</th><th class="p-2 text-left">Varian</th><th class="p-2 text-center">Jml</th>
-                 <th class="p-2 text-right">Total</th><th class="p-2 text-left">Kota</th><th class="p-2 text-center">Status</th>
-                 <th class="p-2 text-center">Resi</th><th class="p-2 text-center">Aksi</th></tr></thead><tbody>`;
-        const fmt = (n) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(n);
-        for (let o of orders) {
-            const statusClass = o.status.toLowerCase().replace(/ /g, '-');
-            html += `<tr class="border-b hover:bg-gray-50">
-                <td class="p-2 text-xs font-mono">${o.idPesanan}</td>
-                <td class="p-2 text-xs">${o.tanggal}</td>
-                <td class="p-2">${o.nama}</td>
-                <td class="p-2"><a href="https://wa.me/${o.noWA}" target="_blank" class="text-green-600 underline">${o.noWA}</a></td>
-                <td class="p-2 text-xs">${o.idVarian}</td>
-                <td class="p-2 text-center">${o.jumlah}</td>
-                <td class="p-2 text-right font-semibold">${fmt(o.totalHarga)}</td>
-                <td class="p-2 text-xs">${(o.kotaTujuan || '').substring(0,30)}</td>
-                <td class="p-2 text-center"><span class="status-badge status-${statusClass}">${o.status}</span></td>
-                <td class="p-2 text-center text-xs">${o.noResi ? `${o.noResi}<br><span class="text-gray-400">${o.kurir}</span>` : '-'}</td>
-                <td class="p-2 text-center">
-                    <button onclick="openUpdateModal('${o.idPesanan}', '${o.status}', '${o.noResi || ''}', '${o.kurir || ''}')" class="bg-green-600 text-white px-2 py-1 rounded text-xs">Update</button>
-                </td>
-             </tr>`;
-        }
-        html += `</tbody></table>`;
-        ordersDiv.innerHTML = html;
+    if (action === 'simpanResi') {
+      const { idPesanan, noResi, kurir } = body;
+      await fetch(`${cleanUrl}/rest/v1/pesanan?id_pesanan=eq.${idPesanan}`, {
+        method: 'PATCH',
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ no_resi: noResi, kurir, status: 'Dikirim' })
+      });
+      if (GAS_URL) {
+        fetch(GAS_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ action: 'syncResi', idPesanan, noResi, kurir }) })
+          .catch(e => console.error('Sync GAS gagal:', e.message));
+      }
+      return res.status(200).json({ status: 'success', idPesanan, noResi, kurir });
     }
 
-    // Modal update
-    function openUpdateModal(id, currentStatus, noResi, kurir) {
-        currentOrderId = id;
-        document.getElementById('modalStatus').value = currentStatus;
-        document.getElementById('modalResi').value = noResi;
-        document.getElementById('modalKurir').value = kurir;
-        document.getElementById('updateModal').classList.remove('hidden');
-    }
-    function closeModal() {
-        document.getElementById('updateModal').classList.add('hidden');
-        currentOrderId = null;
-    }
-    async function confirmUpdate() {
-        if (!currentOrderId) return;
-        const newStatus = document.getElementById('modalStatus').value;
-        const noResi = document.getElementById('modalResi').value.trim();
-        const kurir = document.getElementById('modalKurir').value.trim();
-        try {
-            // Update status
-            let res = await fetch(`${API_BASE}/admin`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'updateStatus', idPesanan: currentOrderId, statusBaru: newStatus, adminPass: token })
-            });
-            let data = await res.json();
-            if (data.status !== 'success') throw new Error(data.message);
-            // If status Dikirim and resi/kurir provided, save them
-            if (newStatus === 'Dikirim' && (noResi || kurir)) {
-                res = await fetch(`${API_BASE}/admin`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'simpanResi', idPesanan: currentOrderId, noResi, kurir, adminPass: token })
-                });
-                data = await res.json();
-                if (data.status !== 'success') throw new Error(data.message);
-            }
-            alert('Update berhasil');
-            closeModal();
-            loadOrders();
-        } catch (err) {
-            alert('Gagal: ' + err.message);
-        }
-    }
-
-    // Stock functions
-    async function loadStock() {
-        const stockDiv = document.getElementById('stockTable');
-        stockDiv.innerHTML = 'Loading...';
-        try {
-            const res = await fetch(`${API_BASE}/admin`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'getProdukAdmin', adminPass: token })
-            });
-            const data = await res.json();
-            if (data.status !== 'success') throw new Error(data.message);
-            renderStockTable(data.produk);
-        } catch (err) {
-            stockDiv.innerHTML = `<div class="text-red-500">Error: ${err.message}</div>`;
-        }
-    }
-
-    function renderStockTable(products) {
-        let html = `<table class="min-w-full"><thead class="bg-gray-100"><tr><th class="p-2 text-left">ID</th><th class="p-2 text-left">Nama</th><th class="p-2 text-center">Stok</th><th class="p-2 text-center">Ubah</th></tr></thead><tbody>`;
-        for (let p of products) {
-            html += `<tr class="border-b">
-                <td class="p-2 text-xs font-mono">${p.id}</td>
-                <td class="p-2">${p.nama}</td>
-                <td class="p-2 text-center font-bold" id="stock-${p.id}">${p.stok}</td>
-                <td class="p-2 text-center">
-                    <div class="flex items-center justify-center gap-1">
-                        <button onclick="changeStock('${p.id}', -1)" class="px-2 py-1 bg-gray-200 rounded">-</button>
-                        <input type="number" id="input-${p.id}" value="${p.stok}" class="w-16 text-center border rounded px-1 py-1">
-                        <button onclick="changeStock('${p.id}', 1)" class="px-2 py-1 bg-gray-200 rounded">+</button>
-                        <button onclick="updateStock('${p.id}')" class="bg-green-600 text-white px-2 py-1 rounded text-sm">Simpan</button>
-                    </div>
-                </td>
-             </tr>`;
-        }
-        html += `</tbody></table>`;
-        document.getElementById('stockTable').innerHTML = html;
-    }
-
-    window.changeStock = function(id, delta) {
-        const input = document.getElementById(`input-${id}`);
-        let val = parseInt(input.value) + delta;
-        if (isNaN(val)) val = 0;
-        if (val < 0) val = 0;
-        input.value = val;
-    };
-    window.updateStock = async function(id) {
-        const newStok = parseInt(document.getElementById(`input-${id}`).value);
-        if (isNaN(newStok)) return;
-        try {
-            const res = await fetch(`${API_BASE}/admin`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'updateStokAdmin', idVarian: id, stokBaru: newStok, adminPass: token })
-            });
-            const data = await res.json();
-            if (data.status !== 'success') throw new Error(data.message);
-            document.getElementById(`stock-${id}`).innerText = newStok;
-            alert('Stok berhasil diupdate');
-        } catch (err) {
-            alert('Gagal: ' + err.message);
-        }
-    };
-
-    // Tab switching
-    function showTab(tab) {
-        const ordersPanel = document.getElementById('ordersPanel');
-        const stockPanel = document.getElementById('stockPanel');
-        const ordersBtn = document.getElementById('tabOrdersBtn');
-        const stockBtn = document.getElementById('tabStockBtn');
-        if (tab === 'orders') {
-            ordersPanel.classList.remove('hidden');
-            stockPanel.classList.add('hidden');
-            ordersBtn.classList.add('border-green-700', 'text-green-700');
-            ordersBtn.classList.remove('text-gray-500');
-            stockBtn.classList.remove('border-green-700', 'text-green-700');
-            stockBtn.classList.add('text-gray-500');
-            loadOrders();
-        } else {
-            ordersPanel.classList.add('hidden');
-            stockPanel.classList.remove('hidden');
-            stockBtn.classList.add('border-green-700', 'text-green-700');
-            stockBtn.classList.remove('text-gray-500');
-            ordersBtn.classList.remove('border-green-700', 'text-green-700');
-            ordersBtn.classList.add('text-gray-500');
-            loadStock();
-        }
-    }
-
-    // Event listeners
-    document.getElementById('searchOrder')?.addEventListener('input', filterAndRenderOrders);
-    document.getElementById('statusFilter')?.addEventListener('change', filterAndRenderOrders);
-</script>
-</body>
-</html>
+    return res.status(400).json({ status: 'error', message: 'Action tidak dikenal' });
+  } catch (err) {
+    console.error('[admin]', err.message);
+    return res.status(500).json({ status: 'error', message: 'Terjadi kesalahan: ' + err.message });
+  }
+}
